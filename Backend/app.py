@@ -9,6 +9,22 @@ import re
 
 app = Flask(__name__)
 
+# Add this flag variable near the top after creating your Flask app
+first_request_done = False
+
+@app.before_request
+def before_first_request_func():
+    global first_request_done
+    if not first_request_done:
+        # Put ALL your initialization code here
+        def create_tables():
+            db.create_all()
+        # Whatever you had in your @app.before_first_request function
+        print("Running first-time initialization...")
+        first_request_done = True
+
+
+
 # Configuration
 app.config['SECRET_KEY'] = 'your-secret-key-change-this-in-production'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///glowgirl.db'
@@ -48,6 +64,7 @@ def validate_email(email):
 
 # Routes
 
+#route #1: register
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     try:
@@ -90,7 +107,8 @@ def register():
         db.session.commit()
         
         # Create JWT token
-        token = create_access_token(identity=new_user.id)
+        # Create JWT token with string identity
+        token = create_access_token(identity=str(new_user.id))
         
         return jsonify({
             'message': 'Registration successful',
@@ -101,6 +119,7 @@ def register():
     except Exception as e:
         return jsonify({'error': 'Registration failed'}), 500
 
+#route #2: login
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     try:
@@ -132,12 +151,14 @@ def login():
     except Exception as e:
         return jsonify({'error': 'Login failed'}), 500
 
+
+#route #3: get current user info
 @app.route('/api/auth/me', methods=['GET'])
 @jwt_required()
 def get_current_user():
     try:
         # Get user ID from JWT token
-        current_user_id = get_jwt_identity()
+        current_user_id = int(get_jwt_identity())  # ← ADD int() here
         user = User.query.get(current_user_id)
         
         if user:
@@ -158,10 +179,8 @@ def logout():
     # For advanced security, you'd implement token blacklisting here
     return jsonify({'message': 'Logout successful'}), 200
 
-# Database setup
-@app.before_first_request
-def create_tables():
-    db.create_all()
+
+
 
 # Test route
 @app.route('/api/test', methods=['GET'])
@@ -171,4 +190,4 @@ def test():
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5001)
