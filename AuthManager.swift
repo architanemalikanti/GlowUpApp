@@ -1,13 +1,140 @@
-
 import SwiftUI
 import Foundation
 
 // MARK: - User Model
 struct User: Codable {
-    let id: String
+    let id: Int
     let email: String
     let username: String
-    let createdAt: Date
+    let created_at: String // Changed to String to match backend ISO format
+    
+    // Helper to convert created_at string to Date
+    var createdAtDate: Date? {
+        let formatter = ISO8601DateFormatter()
+        return formatter.date(from: created_at)
+    }
+}
+
+// MARK: - API Response Models
+struct AuthResponse: Codable {
+    let message: String
+    let token: String
+    let user: User
+}
+
+struct ErrorResponse: Codable {
+    let error: String
+}
+
+// MARK: - API Service
+class APIService {
+    static let shared = APIService()
+    private let baseURL = "http://10.250.198.173:5001" // Change this to your server IP
+    
+    private init() {}
+    
+    func register(email: String, username: String, password: String) async throws -> AuthResponse {
+        let url = URL(string: "\(baseURL)/api/auth/register")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body = [
+            "email": email,
+            "username": username,
+            "password": password
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        // Add debugging
+        print("Response status: \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+        print("Response data: \(String(data: data, encoding: .utf8) ?? "No data")")
+        
+        if let httpResponse = response as? HTTPURLResponse {
+            if httpResponse.statusCode == 201 {
+                do {
+                    return try JSONDecoder().decode(AuthResponse.self, from: data)
+                } catch {
+                    print("Decoding error: \(error)")
+                    throw APIError.decodingError
+                }
+            } else {
+                let errorResponse = try JSONDecoder().decode(ErrorResponse.self, from: data)
+                throw APIError.serverError(errorResponse.error)
+            }
+        }
+        
+        throw APIError.networkError
+    }
+    
+    func login(email: String, password: String) async throws -> AuthResponse {
+        let url = URL(string: "\(baseURL)/auth/login")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body = [
+            "email": email,
+            "password": password
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        if let httpResponse = response as? HTTPURLResponse {
+            if httpResponse.statusCode == 200 {
+                return try JSONDecoder().decode(AuthResponse.self, from: data)
+            } else {
+                let errorResponse = try JSONDecoder().decode(ErrorResponse.self, from: data)
+                throw APIError.serverError(errorResponse.error)
+            }
+        }
+        
+        throw APIError.networkError
+    }
+    
+    func getCurrentUser(token: String) async throws -> User {
+        let url = URL(string: "\(baseURL)/auth/me")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        if let httpResponse = response as? HTTPURLResponse {
+            if httpResponse.statusCode == 200 {
+                let userResponse = try JSONDecoder().decode([String: User].self, from: data)
+                return userResponse["user"]!
+            } else {
+                let errorResponse = try JSONDecoder().decode(ErrorResponse.self, from: data)
+                throw APIError.serverError(errorResponse.error)
+            }
+        }
+        
+        throw APIError.networkError
+    }
+}
+
+// MARK: - API Errors
+enum APIError: Error, LocalizedError {
+    case networkError
+    case serverError(String)
+    case decodingError
+    
+    var errorDescription: String? {
+        switch self {
+        case .networkError:
+            return "Network connection failed"
+        case .serverError(let message):
+            return message
+        case .decodingError:
+            return "Failed to process server response"
+        }
+    }
 }
 
 // MARK: - Authentication Manager
@@ -30,8 +157,22 @@ class AuthManager: ObservableObject {
         if let token = userDefaults.string(forKey: authTokenKey),
            let userData = userDefaults.data(forKey: userDataKey),
            let user = try? JSONDecoder().decode(User.self, from: userData) {
-            self.isAuthenticated = true
-            self.currentUser = user
+            
+            // Verify token is still valid by fetching current user
+            Task {
+                do {
+                    let currentUser = try await APIService.shared.getCurrentUser(token: token)
+                    await MainActor.run {
+                        self.currentUser = currentUser
+                        self.isAuthenticated = true
+                    }
+                } catch {
+                    // Token is invalid, clear stored data
+                    await MainActor.run {
+                        self.logout()
+                    }
+                }
+            }
         }
     }
     
@@ -42,57 +183,29 @@ class AuthManager: ObservableObject {
             errorMessage = nil
         }
         
-        // Simulate API call delay
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        
-        // Basic validation
-        guard isValidEmail(email) else {
+        do {
+            let response = try await APIService.shared.register(
+                email: email,
+                username: username,
+                password: password
+            )
+            
             await MainActor.run {
-                errorMessage = "Please enter a valid email address"
+                saveUserSession(user: response.user, token: response.token)
                 isLoading = false
             }
-            return
-        }
-        
-        guard username.count >= 3 else {
+            
+        } catch let error as APIError {
             await MainActor.run {
-                errorMessage = "Username must be at least 3 characters"
+                errorMessage = error.localizedDescription
                 isLoading = false
             }
-            return
-        }
-        
-        guard password.count >= 6 else {
+        } catch {
             await MainActor.run {
-                errorMessage = "Password must be at least 6 characters"
+                print("Registration error: \(error)") // Add this line for debugging
+                errorMessage = "Registration failed. Please try again."
                 isLoading = false
             }
-            return
-        }
-        
-        // Check if user already exists (simulate)
-        if await userExists(email: email) {
-            await MainActor.run {
-                errorMessage = "An account with this email already exists"
-                isLoading = false
-            }
-            return
-        }
-        
-        // Create new user
-        let newUser = User(
-            id: UUID().uuidString,
-            email: email,
-            username: username,
-            createdAt: Date()
-        )
-        
-        // Simulate successful registration
-        let authToken = "auth_token_\(UUID().uuidString)"
-        
-        await MainActor.run {
-            saveUserSession(user: newUser, token: authToken)
-            isLoading = false
         }
     }
     
@@ -103,38 +216,25 @@ class AuthManager: ObservableObject {
             errorMessage = nil
         }
         
-        // Simulate API call delay
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        
-        // Basic validation
-        guard isValidEmail(email) else {
-            await MainActor.run {
-                errorMessage = "Please enter a valid email address"
-                isLoading = false
-            }
-            return
-        }
-        
-        guard !password.isEmpty else {
-            await MainActor.run {
-                errorMessage = "Please enter your password"
-                isLoading = false
-            }
-            return
-        }
-        
-        // Simulate authentication check
-        if let storedUser = await getStoredUser(email: email) {
-            // Simulate successful login - in real app, you'd verify password with server
-            let authToken = "auth_token_\(UUID().uuidString)"
+        do {
+            let response = try await APIService.shared.login(
+                email: email,
+                password: password
+            )
             
             await MainActor.run {
-                saveUserSession(user: storedUser, token: authToken)
+                saveUserSession(user: response.user, token: response.token)
                 isLoading = false
             }
-        } else {
+            
+        } catch let error as APIError {
             await MainActor.run {
-                errorMessage = "Invalid email or password"
+                errorMessage = error.localizedDescription
+                isLoading = false
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = "Login failed. Please try again."
                 isLoading = false
             }
         }
@@ -162,29 +262,8 @@ class AuthManager: ObservableObject {
         self.isAuthenticated = true
     }
     
-    private func isValidEmail(_ email: String) -> Bool {
-        let emailRegex = "[A-Z0-9a-z._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,64}"
-        let emailPredicate = NSPredicate(format:"SELF MATCHES %@", emailRegex)
-        return emailPredicate.evaluate(with: email)
-    }
-    
-    // Simulate checking if user exists (in real app, this would be an API call)
-    private func userExists(email: String) async -> Bool {
-        // For demo purposes, let's say admin@test.com already exists
-        return email.lowercased() == "admin@test.com"
-    }
-    
-    // Simulate getting stored user (in real app, this would be an API call)
-    private func getStoredUser(email: String) async -> User? {
-        // For demo purposes, create a mock user for testing
-        if email.lowercased() == "test@test.com" {
-            return User(
-                id: "test_user_id",
-                email: email,
-                username: "TestUser",
-                createdAt: Date()
-            )
-        }
-        return nil
+    // Get stored token for making authenticated requests
+    func getAuthToken() -> String? {
+        return userDefaults.string(forKey: authTokenKey)
     }
 }

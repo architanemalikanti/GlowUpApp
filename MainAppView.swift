@@ -7,11 +7,11 @@ struct MainAppView: View {
     
     var body: some View {
         Group {
-            if authManager.isAuthenticated {
+            if authManager.isAuthenticated { //basically if you're logged in, it shows dashboard view.
                 DashboardView()
                     .environmentObject(authManager)
             } else {
-                LoginView()
+                LoginView1()
                     .environmentObject(authManager)
             }
         }
