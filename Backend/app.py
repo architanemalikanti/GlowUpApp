@@ -181,6 +181,245 @@ def logout():
 
 
 
+#START HERE
+@app.route('/api/glow-up-advice', methods=['POST'])
+def get_glow_up_advice():
+    vent_text = request.json.get('vent_text')
+    
+    # Step 1: Analyze emotional context
+    emotional_analysis = analyze_emotional_context(vent_text)
+    
+    # Step 2: Get product strategy from GPT
+    product_strategy = get_product_strategy_from_gpt(emotional_analysis, vent_text)
+    
+    # Step 3: Search for real products using multiple APIs
+    raw_products = search_real_products(product_strategy)
+    
+    # Step 4: Let GPT curate final recommendations
+    final_recommendations = curate_with_gpt(raw_products, emotional_analysis, vent_text)
+    
+    return jsonify(final_recommendations)
+
+def analyze_emotional_context(vent_text):
+    prompt = f"""
+    Analyze this person's emotional state and situation:
+    "{vent_text}"
+    
+    Return JSON with:
+    {{
+        "primary_emotion": "heartbroken/frustrated/anxious/sad/angry",
+        "confidence_level": 1-10,
+        "key_issues": ["dating", "friendships", "self-esteem"],
+        "transformation_type": "subtle/bold/dramatic/natural",
+        "energy_level": "low/medium/high",
+        "budget_preference": "affordable/mid-range/luxury"
+    }}
+    """
+    
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3
+    )
+    
+    return json.loads(response.choices[0].message.content)
+
+def get_product_strategy_from_gpt(analysis, original_text):
+    prompt = f"""
+    Based on this analysis: {analysis}
+    Original text: "{original_text}"
+    
+    Create a strategic search plan. Return JSON:
+    {{
+        "makeup_searches": [
+            {{
+                "product_type": "lipstick",
+                "specific_terms": ["red lipstick confidence", "bold lip color"],
+                "reason": "Bold lips project confidence after heartbreak",
+                "priority": 1
+            }}
+        ],
+        "fashion_searches": [
+            {{
+                "product_type": "blazer",
+                "specific_terms": ["black blazer power", "structured blazer"],
+                "reason": "Creates powerful silhouette",
+                "priority": 1
+            }}
+        ],
+        "quick_wins": [
+            "statement earrings",
+            "confidence-boosting fragrance"
+        ],
+        "styling_tips": [
+            "Focus on power colors like red and black",
+            "Choose structured pieces for confidence"
+        ]
+    }}
+    """
+    
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5
+    )
+    
+    return json.loads(response.choices[0].message.content)
+
+def search_real_products(product_strategy):
+    all_products = {
+        'makeup': [],
+        'fashion': []
+    }
+    
+    # Search makeup products - ONE product per term
+    for search in product_strategy['makeup_searches']:
+        for term in search['specific_terms']:
+            product = search_sephora_single(term)  # Returns ONE product
+            
+            if product:  # If we found a product
+                product['search_reason'] = search['reason']
+                product['priority'] = search['priority']
+                product['category'] = 'makeup'
+                all_products['makeup'].append(product)
+    
+    # Search fashion products - ONE product per term
+    for search in product_strategy['fashion_searches']:
+        for term in search['specific_terms']:
+            product = search_google_shopping_single(term)  # Returns ONE product
+            
+            if product:
+                product['search_reason'] = search['reason']
+                product['priority'] = search['priority']
+                product['category'] = 'fashion'
+                all_products['fashion'].append(product)
+    
+    return all_products
+
+def search_sephora_single(search_term):
+    params = {
+        "q": f"site:sephora.com {search_term}",
+        "api_key": "your_serpapi_key"
+    }
+    
+    response = requests.get("https://serpapi.com/search", params=params)
+    results = response.json()
+    
+    # Get ONLY the first/best result
+    organic_results = results.get('organic_results', [])
+    if organic_results:
+        result = organic_results[0]  # Take only the first one
+        return {
+            'name': result.get('title', ''),
+            'price': extract_price_from_snippet(result.get('snippet', '')),
+            'link': result.get('link', ''),
+            'source': 'Sephora',
+            'rating': None
+        }
+    return None
+
+def search_google_shopping_single(search_term):
+    params = {
+        "q": search_term,
+        "tbm": "shop",
+        "api_key": "your_serpapi_key"
+    }
+    
+    response = requests.get("https://serpapi.com/search", params=params)
+    results = response.json()
+    
+    # Get ONLY the first/best result
+    shopping_results = results.get('shopping_results', [])
+    if shopping_results:
+        result = shopping_results[0]  # Take only the first one
+        return {
+            'name': result.get('title', ''),
+            'price': result.get('price', ''),
+            'link': result.get('link', ''),
+            'source': result.get('source', 'Unknown'),
+            'rating': result.get('rating', None),
+            'image': result.get('thumbnail', '')
+        }
+    return None
+    
+    return products
+
+def deduplicate_and_sort(products):
+    # Remove duplicates based on product name similarity
+    seen = set()
+    unique_products = []
+    
+    for product in products:
+        name_key = product['name'].lower().strip()
+        if name_key not in seen:
+            seen.add(name_key)
+            unique_products.append(product)
+    
+    # Sort by priority, then by rating, then by price
+    return sorted(unique_products, key=lambda x: (
+        x.get('priority', 999),
+        -(x.get('rating', 0) or 0),
+        float(x.get('price', '999').replace('$', '').replace(',', '') or 999)
+    ))
+
+def curate_with_gpt(raw_products, analysis, original_text):
+    prompt = f"""
+    Here are real products I found:
+    MAKEUP: {json.dumps(raw_products['makeup'][:15], indent=2)}
+    FASHION: {json.dumps(raw_products['fashion'][:15], indent=2)}
+    
+    Based on this person's situation:
+    Analysis: {analysis}
+    Original text: "{original_text}"
+    
+    Select the 3-5 best recommendations for each category and create a personalized response:
+    
+    Return JSON:
+    {{
+        "message": "Personal message addressing their situation",
+        "makeup_recommendations": [
+            {{
+                "product": "exact product name",
+                "price": "price",
+                "link": "shopping link",
+                "why_perfect": "specific reason for their situation",
+                "confidence_boost": "how this helps their confidence",
+                "styling_tip": "how to use it"
+            }}
+        ],
+        "outfit_recommendations": [
+            {{
+                "product": "exact product name",
+                "price": "price", 
+                "link": "shopping link",
+                "why_perfect": "specific reason for their situation",
+                "confidence_boost": "how this helps their confidence",
+                "styling_tip": "how to wear it"
+            }}
+        ],
+        "quick_wins": [
+            "immediate things she can do today"
+        ],
+        "transformation_plan": "step-by-step glow up plan"
+    }}
+    
+    Make it personal, empowering, and directly address what she's going through!
+    """
+    
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7
+    )
+    
+    return json.loads(response.choices[0].message.content)
+
+def extract_price_from_snippet(snippet):
+    # Simple price extraction - you'd want to make this more robust
+    import re
+    price_match = re.search(r'\$[\d,]+\.?\d*', snippet)
+    return price_match.group() if price_match else None
+
 
 # Test route
 @app.route('/api/test', methods=['GET'])
