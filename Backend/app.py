@@ -14,6 +14,8 @@ from dotenv import load_dotenv  # ← MISSING - to load .env file
 
 app = Flask(__name__)
 
+load_dotenv()
+
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
@@ -196,9 +198,12 @@ def get_glow_up_advice():
     
     # Step 1: Analyze emotional context
     emotional_analysis = analyze_emotional_context(vent_text)
+    print(f"Emotional analysis: {emotional_analysis}")
     
     # Step 2: Get product strategy from GPT
     product_strategy = get_product_strategy_from_gpt(emotional_analysis, vent_text)
+    print(f"Product strategy: {product_strategy}")  # ← ADD THIS
+    print(f"Keys in product_strategy: {list(product_strategy.keys())}")  # ← ADD THIS
     
     # Step 3: Search for real products using multiple APIs
     raw_products = search_real_products(product_strategy)
@@ -309,7 +314,35 @@ def get_product_strategy_from_gpt(analysis, original_text):
             "quick_wins": ["statement earrings"],
             "styling_tips": ["Focus on confidence-boosting pieces"]
         }
-
+def search_real_products(product_strategy):
+    all_products = {
+        'makeup': [],
+        'fashion': []
+    }
+    
+    # Search makeup products - ONE product per term
+    for search in product_strategy['makeup_searches']:
+        for term in search['specific_terms']:
+            product = search_sephora_single(term)  # Returns ONE product
+            
+            if product:  # If we found a product
+                product['search_reason'] = search['reason']
+                product['priority'] = search['priority']
+                product['category'] = 'makeup'
+                all_products['makeup'].append(product)
+    
+    # Search fashion products - ONE product per term
+    for search in product_strategy['fashion_searches']:
+        for term in search['specific_terms']:
+            product = search_google_shopping_single(term)  # Returns ONE product
+            
+            if product:
+                product['search_reason'] = search['reason']
+                product['priority'] = search['priority']
+                product['category'] = 'fashion'
+                all_products['fashion'].append(product)
+    
+    return all_products
 
 def search_sephora_single(search_term):
     params = {
@@ -366,24 +399,6 @@ def search_google_shopping_single(search_term):
     
     return None
 
-
-def deduplicate_and_sort(products):
-    # Remove duplicates based on product name similarity
-    seen = set()
-    unique_products = []
-    
-    for product in products:
-        name_key = product['name'].lower().strip()
-        if name_key not in seen:
-            seen.add(name_key)
-            unique_products.append(product)
-    
-    # Sort by priority, then by rating, then by price
-    return sorted(unique_products, key=lambda x: (
-        x.get('priority', 999),
-        -(x.get('rating', 0) or 0),
-        float(x.get('price', '999').replace('$', '').replace(',', '') or 999)
-    ))
 
 def curate_with_gpt(raw_products, analysis, original_text):
     prompt = f"""
