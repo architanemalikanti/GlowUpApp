@@ -8,11 +8,14 @@ from datetime import datetime, timedelta
 import re
 import json
 import requests  # ← MISSING - for API calls
-import openai    # ← MISSING - for OpenAI API calls
+from openai import OpenAI    # ← MISSING - for OpenAI API calls
 import os        # ← MISSING - for environment variables
 from dotenv import load_dotenv  # ← MISSING - to load .env file
 
 app = Flask(__name__)
+
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 # Add this flag variable near the top after creating your Flask app
 first_request_done = False
@@ -221,13 +224,25 @@ def analyze_emotional_context(vent_text):
     }}
     """
     
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-    
-    return json.loads(response.choices[0].message.content)
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        print(f"Error in emotional analysis: {e}")
+        # Return a default analysis if API fails
+        return {
+            "primary_emotion": "frustrated",
+            "confidence_level": 5,
+            "key_issues": ["self-esteem"],
+            "transformation_type": "natural",
+            "energy_level": "medium",
+            "budget_preference": "mid-range"
+        }
 
 def get_product_strategy_from_gpt(analysis, original_text):
     prompt = f"""
@@ -263,91 +278,94 @@ def get_product_strategy_from_gpt(analysis, original_text):
     }}
     """
     
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.5
-    )
-    
-    return json.loads(response.choices[0].message.content)
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5
+        )
+        
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        print(f"Error in product strategy: {e}")
+        # Return a default strategy if API fails
+        return {
+            "makeup_searches": [
+                {
+                    "product_type": "lipstick",
+                    "specific_terms": ["red lipstick", "bold lip color"],
+                    "reason": "Confidence boost",
+                    "priority": 1
+                }
+            ],
+            "fashion_searches": [
+                {
+                    "product_type": "blazer",
+                    "specific_terms": ["black blazer", "structured blazer"],
+                    "reason": "Professional look",
+                    "priority": 1
+                }
+            ],
+            "quick_wins": ["statement earrings"],
+            "styling_tips": ["Focus on confidence-boosting pieces"]
+        }
 
-def search_real_products(product_strategy):
-    all_products = {
-        'makeup': [],
-        'fashion': []
-    }
-    
-    # Search makeup products - ONE product per term
-    for search in product_strategy['makeup_searches']:
-        for term in search['specific_terms']:
-            product = search_sephora_single(term)  # Returns ONE product
-            
-            if product:  # If we found a product
-                product['search_reason'] = search['reason']
-                product['priority'] = search['priority']
-                product['category'] = 'makeup'
-                all_products['makeup'].append(product)
-    
-    # Search fashion products - ONE product per term
-    for search in product_strategy['fashion_searches']:
-        for term in search['specific_terms']:
-            product = search_google_shopping_single(term)  # Returns ONE product
-            
-            if product:
-                product['search_reason'] = search['reason']
-                product['priority'] = search['priority']
-                product['category'] = 'fashion'
-                all_products['fashion'].append(product)
-    
-    return all_products
 
 def search_sephora_single(search_term):
     params = {
         "q": f"site:sephora.com {search_term}",
-        "api_key": "your_serpapi_key"
+        "api_key": os.getenv('SERPAPI_KEY')  # Use environment variable
     }
     
-    response = requests.get("https://serpapi.com/search", params=params)
-    results = response.json()
+    try:
+        response = requests.get("https://serpapi.com/search", params=params)
+        results = response.json()
+        
+        # Get ONLY the first/best result
+        organic_results = results.get('organic_results', [])
+        if organic_results:
+            result = organic_results[0]
+            return {
+                'name': result.get('title', ''),
+                'price': extract_price_from_snippet(result.get('snippet', '')),
+                'link': result.get('link', ''),
+                'source': 'Sephora',
+                'rating': None
+            }
+    except Exception as e:
+        print(f"Error searching Sephora: {e}")
     
-    # Get ONLY the first/best result
-    organic_results = results.get('organic_results', [])
-    if organic_results:
-        result = organic_results[0]  # Take only the first one
-        return {
-            'name': result.get('title', ''),
-            'price': extract_price_from_snippet(result.get('snippet', '')),
-            'link': result.get('link', ''),
-            'source': 'Sephora',
-            'rating': None
-        }
     return None
+
 
 def search_google_shopping_single(search_term):
     params = {
         "q": search_term,
         "tbm": "shop",
-        "api_key": "your_serpapi_key"
+        "api_key": os.getenv('SERPAPI_KEY')  # Use environment variable
     }
     
-    response = requests.get("https://serpapi.com/search", params=params)
-    results = response.json()
+    try:
+        response = requests.get("https://serpapi.com/search", params=params)
+        results = response.json()
+        
+        # Get ONLY the first/best result
+        shopping_results = results.get('shopping_results', [])
+        if shopping_results:
+            result = shopping_results[0]
+            return {
+                'name': result.get('title', ''),
+                'price': result.get('price', ''),
+                'link': result.get('link', ''),
+                'source': result.get('source', 'Unknown'),
+                'rating': result.get('rating', None),
+                'image': result.get('thumbnail', '')
+            }
+    except Exception as e:
+        print(f"Error searching Google Shopping: {e}")
     
-    # Get ONLY the first/best result
-    shopping_results = results.get('shopping_results', [])
-    if shopping_results:
-        result = shopping_results[0]  # Take only the first one
-        return {
-            'name': result.get('title', ''),
-            'price': result.get('price', ''),
-            'link': result.get('link', ''),
-            'source': result.get('source', 'Unknown'),
-            'rating': result.get('rating', None),
-            'image': result.get('thumbnail', '')
-        }
     return None
-    
-    return products
+
 
 def deduplicate_and_sort(products):
     # Remove duplicates based on product name similarity
@@ -411,13 +429,29 @@ def curate_with_gpt(raw_products, analysis, original_text):
     Make it personal, empowering, and directly address what she's going through!
     """
     
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7
-    )
-    
-    return json.loads(response.choices[0].message.content)
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+        
+        return json.loads(response.choices[0].message.content)
+    except Exception as e:
+        print(f"Error in curation: {e}")
+        # Return a default response if API fails
+        return {
+            "message": "You've got this! Here are some recommendations to help you feel amazing.",
+            "makeup_recommendations": [],
+            "outfit_recommendations": [],
+            "quick_wins": [
+                "Take a relaxing bath",
+                "Do some light stretching",
+                "Listen to your favorite empowering music"
+            ],
+            "transformation_plan": "Start with small changes that make you feel good, then build from there!"
+        }
+
 
 def extract_price_from_snippet(snippet):
     # Simple price extraction - you'd want to make this more robust
